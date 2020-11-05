@@ -7,9 +7,11 @@ Cameron Gilchrist
 """
 
 import logging
+import io
 
 from collections import defaultdict, OrderedDict
 from itertools import combinations, product
+from operator import attrgetter
 
 import numpy as np
 
@@ -20,7 +22,7 @@ from Bio import Align
 from Bio.Align import substitution_matrices
 
 from clinker.formatters import format_alignment, format_globaligner
-from clinker.classes import Cluster
+from clinker.classes import Cluster, Serializer
 
 
 LOG = logging.getLogger(__name__)
@@ -137,7 +139,29 @@ def compute_identity(alignment):
     return matches / length, (matches + similar) / length
 
 
-class Globaligner:
+def load_substitution_matrix(matrix):
+    text = matrix.encode("utf-8")
+    byte = io.BytesIO(text)
+    reader = io.BufferedReader(byte)
+    wrapper = io.TextIOWrapper(reader)
+    return substitution_matrices.read(wrapper)
+
+
+def serialise_aligner_config(config):
+    copy = config.copy()
+    for key, value in config.items():
+        copy[key] = value if isinstance(value, (float, int)) else str(value)
+    return copy
+
+
+def load_aligner_config(config):
+    for key, value in config.items():
+        if key == "substitution_matrix":
+            config[key] = load_substitution_matrix(value)
+    return config
+
+
+class Globaligner(Serializer):
     """Performs and stores alignments.
 
     Parameters:
@@ -165,10 +189,11 @@ class Globaligner:
         self._alignment_indices = defaultdict(dict)
         self._cluster_names = defaultdict(dict)
 
+        self.aligner_config = self.aligner_default
+        self.configure_aligner(**self.aligner_config)
+
         if aligner_config:
             self.configure_aligner(**aligner_config)
-        else:
-            self.configure_aligner(**self.aligner_default)
 
     def __str__(self):
         """Print all alignments currently stored in the instance."""
@@ -206,6 +231,25 @@ class Globaligner:
                 for link in alignment.links
             ],
         }
+
+    def to_dict(self):
+        return dict(
+            clusters=[c.to_dict() for c in self.clusters.values()],
+            aligner_config=serialise_aligner_config(self.aligner_config),
+            alignments=[a.to_dict() for a in self.alignments],
+            _alignment_indices=dict(self._alignment_indices),
+            _cluster_names=dict(self._cluster_names),
+        )
+
+    @classmethod
+    def from_dict(cls, d):
+        config = load_aligner_config(d["aligner_config"])
+        g = cls(aligner_config=config)
+        g._alignment_indices = defaultdict(dict, d["_alignment_indices"])
+        g._cluster_names = defaultdict(dict, d["_cluster_names"])
+        g.clusters = OrderedDict((c["name"], Cluster.from_dict(c)) for c in d["clusters"])
+        g.alignments = [Alignment.from_dict(a) for a in d["alignments"]]
+        return g
 
     def add_clusters(self, *clusters):
         """Adds new Cluster object/s to the Globaligner.
@@ -254,6 +298,7 @@ class Globaligner:
                     f'"{key}" is not a valid attribute of the BioPython'
                     "Align.PairwiseAligner class"
                 )
+            self.aligner_config[key] = value
             setattr(self.aligner, key, value)
 
     @property
@@ -372,7 +417,7 @@ class Globaligner:
         return hierarchy.leaves_list(linkage)[::-1]
 
 
-class Alignment:
+class Alignment(Serializer):
     """An alignment between two gene clusters.
 
     Attributes:
@@ -386,6 +431,21 @@ class Alignment:
 
     def __str__(self):
         return self.format()
+
+    def to_dict(self):
+        return dict(
+            query=self.query.uid,
+            target=self.target.uid,
+            links=[link.to_dict() for link in self.links]
+        )
+
+    @classmethod
+    def from_dict(cls, d):
+        return cls(
+            query=d.get("query"),
+            target=d.get("target"),
+            links=[Link.from_dict(link) for link in d.get("links")]
+        )
 
     def format(
         self,
@@ -421,7 +481,7 @@ class Alignment:
         self.links.append(link)
 
 
-class Link:
+class Link(Serializer):
     """An alignment link between two Gene objects."""
 
     def __init__(self, query, target, identity=None, similarity=None):
@@ -438,8 +498,12 @@ class Link:
 
     def to_dict(self):
         return {
-            "query": dict(uid=self.query.uid, name=self.query.name),
-            "target": dict(uid=self.target.uid, name=self.target.name),
+            "query": self.query.uid,
+            "target": self.target.uid,
             "identity": self.identity,
             "similarity": self.similarity,
         }
+
+    @classmethod
+    def from_dict(cls, d):
+        return cls(**d)

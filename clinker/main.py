@@ -12,7 +12,8 @@ import traceback
 
 from pathlib import Path
 
-from clinker import align, plot
+from clinker import align
+from clinker.plot import plot_clusters
 from clinker.classes import find_files, parse_files
 
 
@@ -31,6 +32,8 @@ def clinker(
     decimals=2,
     output=None,
     force=False,
+    plot=False,
+    session=None,
     hide_link_headers=False,
     hide_alignment_headers=False,
 ):
@@ -48,7 +51,13 @@ def clinker(
     clusters = parse_files(paths)
 
     # Align all clusters
-    if len(clusters) == 1:
+    save_session = session is not None
+    if session and Path(session).exists():
+        LOG.info("Loading alignments from: %s", session)
+        with open(session) as fp:
+            globaligner = align.Globaligner.from_json(fp)
+        save_session = False
+    elif len(clusters) == 1:
         globaligner = align.align_clusters(clusters[0])
     else:
         LOG.info("Starting cluster alignments")
@@ -68,9 +77,16 @@ def clinker(
         else:
             print(summary)
 
+    if save_session:
+        LOG.info("Writing session to: %s", session)
+        print(globaligner.to_dict())
+        with open(session, "w") as fp:
+            globaligner.to_json(fp)
+
     # Generate the SVG
-    LOG.info("Building clustermap.js visualisation")
-    plot.plot_clusters(globaligner)
+    if plot:
+        LOG.info("Building clustermap.js visualisation")
+        plot_clusters(globaligner, output=None if plot is True else plot)
 
     LOG.info("Done!")
     return globaligner
@@ -93,6 +109,11 @@ def get_parser():
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument("files", help="Gene cluster GenBank files", nargs="+")
+    parser.add_argument(
+        "-s",
+        "--session",
+        help="clinker session file"
+    )
 
     alignment = parser.add_argument_group("Alignment options")
     alignment.add_argument(
@@ -104,6 +125,16 @@ def get_parser():
     )
 
     output = parser.add_argument_group("Output options")
+    output.add_argument(
+        "-p",
+        "--plot",
+        nargs="?",
+        const=True,
+        default=False,
+        help="Plot cluster alignments using clustermap.js. If a path is given,"
+        " clinker will generate a portable HTML file at that path. Otherwise,"
+        " the plot will be served dynamically using Python's HTTP server."
+    )
     output.add_argument("-f", "--force", help="Overwrite previous output file", action="store_true")
     output.add_argument("-o", "--output", help="Save alignments to file")
     output.add_argument("-dl", "--delimiter", help="Character to delimit output by")
@@ -134,6 +165,8 @@ def main():
         decimals=args.decimals,
         output=args.output,
         force=args.force,
+        plot=args.plot,
+        session=args.session,
         hide_link_headers=args.hide_link_headers,
         hide_alignment_headers=args.hide_aln_headers,
     )

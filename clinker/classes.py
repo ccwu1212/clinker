@@ -8,6 +8,7 @@ Cameron Gilchrist
 
 import itertools
 import warnings
+import json
 
 from pathlib import Path
 
@@ -49,7 +50,41 @@ def parse_files(paths):
     return [parse_genbank(path) for path in paths]
 
 
-class Cluster:
+class Serializer:
+    """JSON serialisation mixin class.
+
+    Classes that inherit from this class should implement `to_dict` and
+    `from_dict` methods.
+    """
+
+    def to_dict(self):
+        """Serialises class to dict."""
+        raise NotImplementedError
+
+    @classmethod
+    def from_dict(self, d):
+        """Loads class from dict."""
+        raise NotImplementedError
+
+    def to_json(self, fp=None, **kwargs):
+        """Serialises class to JSON."""
+        d = self.to_dict()
+        if fp:
+            json.dump(d, fp, **kwargs)
+        else:
+            return json.dumps(d, **kwargs)
+
+    @classmethod
+    def from_json(cls, js):
+        """Instantiates class from JSON handle."""
+        if isinstance(js, str):
+            d = json.loads(js)
+        else:
+            d = json.load(js)
+        return cls.from_dict(d)
+
+
+class Cluster(Serializer):
     """The Cluster class stores Proteins
 
     Attributes:
@@ -73,6 +108,14 @@ class Cluster:
         }
 
     @classmethod
+    def from_dict(cls, d):
+        return cls(
+            uid=d["uid"],
+            name=d["name"],
+            loci=[Locus.from_dict(l) for l in d["loci"]]
+        )
+
+    @classmethod
     def from_seqrecords(cls, *args, name=None):
         """Instantiates a Cluster from BioPython SeqRecord/s.
 
@@ -90,7 +133,7 @@ class Cluster:
                 return gene
 
 
-class Locus:
+class Locus(Serializer):
     """A cluster locus."""
 
     id_iter = itertools.count()
@@ -115,6 +158,16 @@ class Locus:
         }
 
     @classmethod
+    def from_dict(cls, d):
+        return cls(
+            uid=d["uid"],
+            name=d["name"],
+            genes=[Gene.from_dict(g) for g in d["genes"]],
+            start=d["start"],
+            end=d["end"],
+        )
+
+    @classmethod
     def from_seqrecord(cls, record):
         """Builds a new Locus from a BioPython SeqRecord."""
         if not isinstance(record, SeqRecord.SeqRecord):
@@ -132,7 +185,7 @@ class Locus:
                 return gene
 
 
-class Gene:
+class Gene(Serializer):
     """Location, annotation and attachment points for drawing links."""
 
     id_iter = itertools.count()
@@ -155,7 +208,6 @@ class Gene:
         self.strand = strand
         self.sequence = sequence
         self.translation = translation
-        self.smcog = {}
         self.function = function if function else 'Hypothetical'
 
     def to_dict(self):
@@ -167,15 +219,12 @@ class Gene:
             "strand": self.strand,
             "sequence": self.sequence,
             "translation": self.translation,
-            "smcog": self.smcog,
             "function": self.function,
         }
 
-    @property
-    def ordered_smcogs(self):
-        """Returns an ordered list of smCOG hits."""
-        ordered = sorted(self.smcog, key=lambda x: self.smcog[x][0])
-        return [(key, *self.smcog[key]) for key in ordered]
+    @classmethod
+    def from_dict(cls, d):
+        return cls(**d)
 
     @classmethod
     def from_seqfeature(cls, feature, record):
